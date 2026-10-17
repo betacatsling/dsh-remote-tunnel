@@ -81,7 +81,14 @@ async function clientFixture({ question = false } = {}) {
   const controls = [],
     accepted = [],
     injectedDependencies = [],
-    generationListeners = new Set();
+    generationListeners = new Set(),
+    workspaceReaders = new Map();
+  let createdCount = 0,
+    failWorkspaceOpen = false;
+  const pushFrame = (controller, value) =>
+    controller.enqueue(
+      new TextEncoder().encode(JSON.stringify({ type: "item", value }) + "\n"),
+    );
   const fetchImpl = async (url, init) => {
     const body = JSON.parse(init.body);
     requests.push({ url, body });
@@ -108,7 +115,17 @@ async function clientFixture({ question = false } = {}) {
           },
         ],
       };
-    else if (action === "rpc")
+    else if (action === "rpc") {
+      if (body.endpoint === "session/create") {
+        const sessionId = "session-created-" + ++createdCount;
+        remote.sessionIds = [sessionId, ...remote.sessionIds];
+        for (const controller of workspaceReaders.get("stream") || [])
+          pushFrame(controller, { type: "upsert", workspace: remote });
+        return Response.json({
+          ok: true,
+          value: { ok: true, value: { sessionId } },
+        });
+      }
       value = {
         ok: true,
         value:
@@ -116,7 +133,15 @@ async function clientFixture({ question = false } = {}) {
             ? { items: [{ sessionId: "session-lab", updatedAt: 2 }] }
             : { accepted: true },
       };
-    else if (action === "local-stream" || action === "stream") {
+    } else if (action === "local-stream" || action === "stream") {
+      if (
+        body.endpoint === "workspace/follow" &&
+        action === "local-stream" &&
+        failWorkspaceOpen
+      ) {
+        failWorkspaceOpen = false;
+        throw new TypeError("network error opening stream");
+      }
       let frame;
       if (body.endpoint === "workspace/follow")
         frame = {
@@ -218,9 +243,22 @@ async function clientFixture({ question = false } = {}) {
                 JSON.stringify({ type: "item", value: frame }) + "\n",
               ),
             );
-            init.signal.addEventListener("abort", () => controller.close(), {
-              once: true,
-            });
+            let readers;
+            if (body.endpoint === "workspace/follow") {
+              readers = workspaceReaders.get(action);
+              if (!readers) workspaceReaders.set(action, (readers = new Set()));
+              readers.add(controller);
+            }
+            init.signal.addEventListener(
+              "abort",
+              () => {
+                readers?.delete(controller);
+                try {
+                  controller.close();
+                } catch {}
+              },
+              { once: true },
+            );
           },
         }),
         { headers: { "content-type": "application/x-ndjson" } },
@@ -337,6 +375,11 @@ async function clientFixture({ question = false } = {}) {
     controls,
     accepted,
     injectedDependencies,
+    loseLocalWorkspace({ failReopen = false } = {}) {
+      failWorkspaceOpen = failReopen;
+      for (const controller of workspaceReaders.get("local-stream") || [])
+        controller.error(new TypeError("network error reading stream"));
+    },
     replaceGeneration() {
       for (const fn of generationListeners) fn();
     },
@@ -526,3 +569,46 @@ test("carrier replacement restores the shipped control stream and forwards live 
   f.replaceGeneration();
   assert.equal(control.restarts, 1);
 });
+
+test(
+  "workspace plus creation preserves membership after local stream read and reopen failures",
+  { timeout: 12000 },
+  async () => {
+    const f = await clientFixture(),
+      abort = new AbortController();
+    const frames = f.rpc
+      .open("/api", "workspace/follow", { args: {} }, abort.signal)
+      [Symbol.asyncIterator]();
+    try {
+      assert.equal((await frames.next()).value.type, "baseline");
+      // The remote opening snapshot arrives as native increments.
+      for (let i = 0; i < 3; i++) await frames.next();
+      f.loseLocalWorkspace({ failReopen: true });
+      const recovered = (await frames.next()).value;
+      assert.equal(recovered.type, "upsert");
+      assert.equal(recovered.workspace.workspaceId, "workspace-local");
+      assert.equal((await frames.next()).value.type, "archived");
+      assert.equal((await frames.next()).value.type, "pinned");
+      const result = await f.rpc.call("/api", "session/create", {
+        args: { request: { workspaceId: "workspace-lab" } },
+      });
+      const membership = (await frames.next()).value;
+      assert.equal(membership.type, "upsert");
+      assert.equal(membership.workspace.workspaceId, "workspace-lab");
+      assert.ok(
+        membership.workspace.sessionIds.includes(result.value.sessionId),
+      );
+      await f.rpc.call("/api", "session/prompt", {
+        args: { request: { sessionId: result.value.sessionId } },
+      });
+      assert.equal(
+        f.requests.find((r) => r.body.endpoint === "session/prompt").body.host,
+        "lab",
+      );
+    } finally {
+      abort.abort();
+      await frames.return();
+      f.disposers.forEach((d) => d?.());
+    }
+  },
+);

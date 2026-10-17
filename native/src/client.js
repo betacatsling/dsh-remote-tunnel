@@ -77,12 +77,18 @@ window.__ModuleLoader__.load({
       const streamId = crypto.randomUUID();
       const abort = new AbortController(),
         combined = AbortSignal.any([signal, abort.signal]);
-      const response = await fetch("/native-remote/" + action + "?confirm=1", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ host, endpoint, payload, streamId }),
-        signal: combined,
-      });
+      let response;
+      try {
+        response = await fetch("/native-remote/" + action + "?confirm=1", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ host, endpoint, payload, streamId }),
+          signal: combined,
+        });
+      } catch (error) {
+        if (combined.aborted) throw error;
+        throw new RemoteStreamCarrierError(error.message);
+      }
       if (!response.ok)
         throw new RemoteStreamCarrierError(
           "Workspace stream unavailable: HTTP " + response.status,
@@ -109,7 +115,13 @@ window.__ModuleLoader__.load({
         })();
       try {
         while (!combined.aborted) {
-          const next = await reader.read();
+          let next;
+          try {
+            next = await reader.read();
+          } catch (error) {
+            if (combined.aborted) throw error;
+            throw new RemoteStreamCarrierError(error.message);
+          }
           if (next.done)
             throw new RemoteStreamCarrierError("Workspace stream ended");
           buffer += decoder.decode(next.value, { stream: true });
@@ -368,10 +380,7 @@ window.__ModuleLoader__.load({
                   throw new RemoteStreamCarrierError("Local stream ended");
               } catch (error) {
                 if (combined.aborted) return;
-                if (!alias) {
-                  void api("diagnostic", {
-                    stage: "local " + endpoint + ": " + error.message,
-                  }).catch(() => {});
+                if (!alias && !(error instanceof RemoteStreamCarrierError)) {
                   inbox.end(error);
                   return;
                 }
@@ -380,7 +389,9 @@ window.__ModuleLoader__.load({
                   stage: endpoint + ": " + error.message,
                 }).catch(() => {});
               }
-              if (!alias || combined.aborted) return;
+              // Keep the composed observation alive across local carrier loss too.
+              // Ending it would permanently close the shipped Workspace consumer.
+              if (combined.aborted) return;
               await new Promise((resolve) => {
                 const timer = setTimeout(resolve, 2000);
                 combined.addEventListener(
@@ -409,6 +420,7 @@ window.__ModuleLoader__.load({
               }
               if (
                 !alias &&
+                !localReady &&
                 ((endpoint === "$events" && value.type === "ready") ||
                   (endpoint !== "$events" && value.type === "baseline"))
               ) {
@@ -482,11 +494,11 @@ window.__ModuleLoader__.load({
                 }
                 yield value;
               } else if (endpoint === "session/control") {
-                if (alias && value.type === "baseline") {
+                if (value.type === "baseline") {
                   for (const [sessionId, p] of Object.entries(
                     value.value.projections,
                   )) {
-                    owners.set(sessionId, alias);
+                    if (alias) owners.set(sessionId, alias);
                     for (const [key, v] of Object.entries(p.values))
                       yield {
                         type: "projection",
@@ -499,9 +511,22 @@ window.__ModuleLoader__.load({
                 } else yield value;
               } else {
                 if (value.type === "baseline") {
+                  // A physical reconnect is a fresh snapshot, but the logical
+                  // stream has already opened. Reconcile it as native increments.
+                  const previous = states.get(alias)?.items || [];
                   states.set(alias, value.value);
+                  for (const workspace of previous)
+                    if (
+                      !value.value.items.some(
+                        (w) => w.workspaceId === workspace.workspaceId,
+                      )
+                    )
+                      yield {
+                        type: "remove",
+                        workspaceId: workspace.workspaceId,
+                      };
                   for (const workspace of value.value.items) {
-                    remember(alias, workspace);
+                    if (alias) remember(alias, workspace);
                     yield { type: "upsert", workspace };
                   }
                   yield {
@@ -514,6 +539,30 @@ window.__ModuleLoader__.load({
                   };
                 } else if (value.type === "upsert") {
                   if (alias) remember(alias, value.workspace);
+                  const state = states.get(alias);
+                  if (state)
+                    states.set(alias, {
+                      ...state,
+                      items: state.items.some(
+                        (w) => w.workspaceId === value.workspace.workspaceId,
+                      )
+                        ? state.items.map((w) =>
+                            w.workspaceId === value.workspace.workspaceId
+                              ? value.workspace
+                              : w,
+                          )
+                        : [...state.items, value.workspace],
+                    });
+                  yield value;
+                } else if (value.type === "remove") {
+                  const state = states.get(alias);
+                  if (state)
+                    states.set(alias, {
+                      ...state,
+                      items: state.items.filter(
+                        (w) => w.workspaceId !== value.workspaceId,
+                      ),
+                    });
                   yield value;
                 } else if (value.type === "order") {
                   const local =
