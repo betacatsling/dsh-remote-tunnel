@@ -140,7 +140,8 @@ async function handle(connection, manager, services, settings, req, res) {
           config: {
             openIn: settings?.openIn ?? "ask",
             autoOpen: settings?.autoOpen === true,
-            dock: settings?.dock !== false
+            dock: settings?.dock !== false,
+            background: settings?.background === true
           },
           hosts,
           hidden,

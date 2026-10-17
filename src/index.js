@@ -43,6 +43,7 @@ export const Config = Schema.object({
   openIn: Schema.string(),
   autoOpen: Schema.boolean(),
   dock: Schema.boolean(),
+  background: Schema.boolean(),
   auth: Schema.boolean()
 });
 
@@ -54,6 +55,7 @@ export function readSettings(config) {
     openIn: typeof config?.openIn === "string" && OPEN_MODES.has(config.openIn) ? config.openIn : "ask",
     autoOpen: config?.autoOpen === true,
     dock: config?.dock !== false,
+    background: config?.background === true,
     // Require the GUI's own browser session on every /remote-tunnel/* request
     // (the desktop shell and the web page both carry it). Set false only to
     // debug a carrier that cannot present a cookie.

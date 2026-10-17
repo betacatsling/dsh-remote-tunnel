@@ -362,7 +362,7 @@ function loadClientBundle() {
       ? {
         ok: true,
         version: "0.2.1",
-        config: { openIn: "ask", autoOpen: false, dock: state.dock },
+        config: { openIn: "ask", autoOpen: false, dock: state.dock, background: state.background === true },
         hosts: state.hosts,
         hidden: state.hidden,
         ...(state.legacy === true
@@ -937,4 +937,14 @@ test("authRejection: mirrors connection.admit() and honours auth:false", () => {
   assert.equal(authRejection(admitted, { auth: true }, {}), undefined);
   assert.equal(authRejection(unauthenticated, { auth: false }, {}), undefined, "the escape hatch must bypass the check");
   assert.equal(authRejection(undefined, { auth: true }, {}), undefined, "no connection service = no check available");
+});
+
+
+test("background mode registers no tunnel panels, cards or composer strip", async () => {
+  const load = loadClientBundle();
+  load.state.background = true;
+  const { registered, tabTypes, opened } = await mountClient(load);
+  assert.deepEqual(registered, []);
+  assert.deepEqual(tabTypes, []);
+  assert.deepEqual(opened, []);
 });

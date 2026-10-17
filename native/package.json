@@ -1,0 +1,35 @@
+{
+  "name": "dsh-native-remote",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "external": [
+        "@deepseek-ai/dsh-api-gateway/client",
+        "@deepseek-ai/dsh-client-modules/client"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ]
+}

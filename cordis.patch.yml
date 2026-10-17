@@ -24,4 +24,5 @@
         openIn: ask
         autoOpen: false
         dock: true
+        background: false
         auth: true

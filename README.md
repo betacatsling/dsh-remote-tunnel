@@ -354,3 +354,7 @@ The integration suite uses a fake `ssh` that interprets the plugin's remote comm
 
 - No SSH/SFTP/remote-mount implementation: the design is "run dsh on the server"; the tunnel only brings HTTP back locally
 - No new TUI: CLI subcommands + the web profile's `/remote` slash commands
+
+## Native remote workspaces
+
+The optional [native companion](native/README.md) composes workspace connections into the desktop’s existing workspace tree, conversation, composer and tool views. It runs connection management in the background without a separate panel, status strip or host labels. Remote Hosts retain execution and history across local disconnections.

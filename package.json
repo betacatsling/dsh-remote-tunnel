@@ -36,7 +36,11 @@
     "docs",
     "README.md",
     "README.zh.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "native/src",
+    "native/package.json",
+    "native/cordis.patch.yml",
+    "native/README.md"
   ],
   "dsh": {
     "bundle": {
@@ -56,10 +60,11 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-cmdline": "^0.1.2-alpha.3",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "ws": "^8.18.0"
   },
   "scripts": {
-    "test": "node --test test/unit.test.js test/integration.test.js"
+    "test": "node --test --test-concurrency=1 --test-timeout=60000 test/unit.test.js test/integration.test.js test/native.test.js"
   },
   "engines": {
     "node": ">=22.19"

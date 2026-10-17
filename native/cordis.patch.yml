@@ -1,0 +1,12 @@
+- insert:
+    - id: native-remote
+      name: dsh-native-remote
+      config:
+        hosts: []
+
+- id: remote-tunnel
+  config:
+    background: true
+    dock: false
+    autoOpen: false
+    openIn: ask

@@ -614,7 +614,11 @@ window.__ModuleLoader__.load({
 
     return {
       name: "remote-tunnel",
-      apply: function (ctx) {
+      apply: async function (ctx) {
+        // A native workspace companion uses the manager as a background service.
+        // Keep the legacy UI available only for profiles that explicitly use it.
+        var initial = await callHost("status");
+        if (initial.config && initial.config.background === true) return;
         var sidebarService = null;
 
         function sidebar() {
