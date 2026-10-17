@@ -78,6 +78,10 @@ async function clientFixture({ question = false } = {}) {
       sessionIds: ["session-lab"],
     };
   let registered;
+  const controls = [],
+    accepted = [],
+    injectedDependencies = [],
+    generationListeners = new Set();
   const fetchImpl = async (url, init) => {
     const body = JSON.parse(init.body);
     requests.push({ url, body });
@@ -126,7 +130,43 @@ async function clientFixture({ question = false } = {}) {
             pinnedSessionIds: [],
           },
         };
-      else if (body.endpoint === "$events") {
+      else if (body.endpoint === "session/control") {
+        const frames =
+          action === "local-stream"
+            ? [{ type: "baseline", value: { projections: {} } }]
+            : [
+                {
+                  type: "baseline",
+                  value: {
+                    projections: {
+                      "session-lab": { asOfSeq: 1, values: { title: null } },
+                    },
+                  },
+                },
+                {
+                  type: "projection",
+                  sessionId: "session-lab",
+                  key: "title",
+                  value: "Automatic title after first message",
+                  seq: 2,
+                },
+              ];
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              for (const value of frames)
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    JSON.stringify({ type: "item", value }) + "\n",
+                  ),
+                );
+              init.signal.addEventListener("abort", () => controller.close(), {
+                once: true,
+              });
+            },
+          }),
+        );
+      } else if (body.endpoint === "$events") {
         const frames = [
           {
             type: "ready",
@@ -200,12 +240,22 @@ async function clientFixture({ question = false } = {}) {
   const scoped = {
     connection: {
       rpc,
+      generation: {
+        getSnapshot: () => ({ id: 1 }),
+        subscribe(fn) {
+          generationListeners.add(fn);
+          return () => generationListeners.delete(fn);
+        },
+      },
       reconnect() {
         reconnects++;
       },
     },
     remote: {},
     sessions: {
+      handleControlFrame(frame) {
+        accepted.push(frame);
+      },
       list: {
         subscribe: () => () => {},
         getSnapshot: () => ({
@@ -223,10 +273,11 @@ async function clientFixture({ question = false } = {}) {
       return undefined;
     },
   };
-  scoped.inject = (deps, fn) =>
-    deps.includes("fileUpload") || deps.includes("workspaces")
-      ? undefined
-      : fn(scoped);
+  scoped.inject = (deps, fn) => {
+    injectedDependencies.push(Array.from(deps));
+    if (deps.includes("fileUpload") || deps.includes("workspaces")) return;
+    fn(scoped);
+  };
   const source = readFileSync(
     new URL("../native/src/client.js", import.meta.url),
     "utf8",
@@ -235,9 +286,32 @@ async function clientFixture({ question = false } = {}) {
     window: {
       __ModuleLoader__: {
         load(v) {
-          registered = v.factory(() => ({
-            RemoteStreamCarrierError: class extends Error {},
-          }));
+          registered = v.factory((name) =>
+            name === "@deepseek-ai/dsh-api-session-controller/client"
+              ? {
+                  createSessionControlStream(remote, options) {
+                    assert.equal(remote, scoped.remote);
+                    const control = {
+                      options,
+                      started: false,
+                      disposed: false,
+                      restarts: 0,
+                      start() {
+                        this.started = true;
+                      },
+                      restart() {
+                        this.restarts++;
+                      },
+                      async dispose() {
+                        this.disposed = true;
+                      },
+                    };
+                    controls.push(control);
+                    return control;
+                  },
+                }
+              : { RemoteStreamCarrierError: class extends Error {} },
+          );
         },
       },
     },
@@ -260,6 +334,12 @@ async function clientFixture({ question = false } = {}) {
     rpc,
     requests,
     disposers,
+    controls,
+    accepted,
+    injectedDependencies,
+    replaceGeneration() {
+      for (const fn of generationListeners) fn();
+    },
     get reconnects() {
       return reconnects;
     },
@@ -415,4 +495,34 @@ test("native binary RPC replies preserve attachment paths and bytes", async () =
   assert.deepEqual(result.binaryParts, [
     { path: ["data"], data: Buffer.from([0, 128, 255]).toString("base64") },
   ]);
+});
+
+test("carrier replacement restores the shipped control stream and forwards live generated titles to its original Session sink", async () => {
+  const f = await clientFixture();
+  assert.ok(f.injectedDependencies[0].includes("remote.session"));
+  assert.equal(f.controls.length, 1);
+  const control = f.controls[0];
+  assert.equal(control.started, true);
+  const abort = new AbortController(),
+    frames = f.rpc
+      .open("/api", "session/control", { args: {} }, abort.signal)
+      [Symbol.asyncIterator]();
+  const baseline = (await frames.next()).value;
+  assert.equal(baseline.type, "baseline");
+  control.options.accept(baseline);
+  control.options.accept((await frames.next()).value);
+  const title = (await frames.next()).value;
+  control.options.accept(title);
+  assert.equal(f.accepted.at(-1), title);
+  assert.equal(title.key, "title");
+  assert.equal(title.value, "Automatic title after first message");
+  assert.equal(title.seq, 2);
+  f.replaceGeneration();
+  assert.equal(control.restarts, 1);
+  abort.abort();
+  await frames.return();
+  f.disposers.forEach((d) => d?.());
+  assert.equal(control.disposed, true);
+  f.replaceGeneration();
+  assert.equal(control.restarts, 1);
 });

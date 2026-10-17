@@ -147,7 +147,13 @@ window.__ModuleLoader__.load({
       }
     }
     function apply(ctx) {
-      ctx.inject(["connection", "remote", "sessions"], (scoped) => {
+      const dependencies = [
+        "connection",
+        "remote",
+        "remote.session",
+        "sessions",
+      ];
+      ctx.inject(dependencies, (scoped) => {
         void api("diagnostic", { stage: "transport mounted" });
         const connection = scoped.connection,
           rpc = connection.rpc,
@@ -160,6 +166,8 @@ window.__ModuleLoader__.load({
         let disposed = false,
           installed = false;
         const abort = new AbortController();
+        let control, unsubscribeGeneration;
+
         function remember(alias, workspace, sessions) {
           if (workspace) {
             workspaceOwners.set(workspace.workspaceId, alias);
@@ -267,9 +275,9 @@ window.__ModuleLoader__.load({
           const alias = target(endpoint, payload.args);
           if (alias) return remoteCall(alias, endpoint, payload, signal);
           if (endpoint === "session/list")
-            void api("diagnostic", { stage: "session list intercepted" }).catch(
-              () => {},
-            );
+            void api("diagnostic", {
+              stage: "session list intercepted",
+            }).catch(() => {});
           const local = await originalCall(channel, endpoint, payload, signal);
           if (!local.ok) return local;
           if (endpoint === "session/search") {
@@ -616,6 +624,8 @@ window.__ModuleLoader__.load({
             unsubscribeCatalog();
             disposed = true;
             abort.abort();
+            unsubscribeGeneration?.();
+            void control?.dispose();
             if (installed) {
               rpc.call = originalCall;
               if (originalOpen) rpc.open = originalOpen;
@@ -651,6 +661,22 @@ window.__ModuleLoader__.load({
           rpc.call = call;
           rpc.open = open;
           installed = true;
+          // The original control consumer may already have finished on the old
+          // carrier. Reuse the shipped stream and its existing Session sink so
+          // generated titles and other projections keep arriving after install.
+          const {
+            createSessionControlStream,
+          } = require("@deepseek-ai/dsh-api-session-controller/client");
+          control = createSessionControlStream(scoped.remote, {
+            accept: (frame) => scoped.sessions.handleControlFrame(frame),
+            failed: (error) =>
+              console.error("[workspace transport] session control:", error),
+          });
+          unsubscribeGeneration = connection.generation?.subscribe(() => {
+            if (connection.generation.getSnapshot() !== undefined)
+              control.restart();
+          });
+          control.start();
           // Reopen the shipped Workspace Controller on the composed carrier.
           // Its existing UI dependents remount through the normal module lifecycle.
           await refreshModule("@deepseek-ai/dsh-api-workspace-controller");
