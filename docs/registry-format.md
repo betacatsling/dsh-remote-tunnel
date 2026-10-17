@@ -36,7 +36,8 @@ port	user	workspace	source	created_at	last_heartbeat	status
 
 - **分配(原子)**:`flock` 锁内一次性完成「读登记表 in-use 集合 + 对区间内每个端口做真实 bind 探测 → 取第一个两者都空闲的端口 → 追加 in-use 行 → 回显端口」。多个用户并发分配不会拿到同一个端口。
 - **心跳**:`flock` 锁内用 `awk` 原位更新对应行的 `last_heartbeat`(仅 in-use 行)。
-- **释放**:`flock` 锁内把对应行 `status` 改为 `released`。
+- **断开**：保留远程服务和 `in-use` 登记。
+- **释放**：显式 `down --stop-service` 停止并禁用单元、确认端口空闲后，才在 `flock` 锁内把对应行 `status` 改为 `released`。
 - **清理**:`audit --clean-stale` 把「登记 in-use 但实际无进程监听」的行改为 `released`;历史行保留,便于事后审查。
 
 ## 审查(audit)

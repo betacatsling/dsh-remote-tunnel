@@ -2,6 +2,8 @@
 
 中文 | [English](README.md)
 
+> 本 fork 默认断开时保留远程 DSH，继续保留 SSH 发现、远程安装、systemd 管理和自动重连。安装本 fork：克隆此仓库，在仓库目录运行 `dsh plugin --profile desktop add .`。下方 npm 包安装说明指向上游版本。
+
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 **Remote Host Tunnel Manager**:把「本地浏览器 → 远程 Linux 服务器上的 dsh web」这条链路自动化——远程端口分配与登记、systemd 守护、SSH 隧道保活、本地 URL 输出、全生命周期管理,并面向多人共用同一台服务器的场景。
@@ -90,7 +92,7 @@ dsh --profile remote up lab --open
 dsh --profile remote status lab
 dsh --profile remote logs lab            # 远程 dsh web 日志(journalctl)
 dsh --profile remote audit lab           # 登记表 vs 真实占用
-dsh --profile remote down lab            # 停隧道 + 登记表 released + 停服务 + 核实端口已释放
+dsh --profile remote down lab            # 仅断开本地隧道；远程 DSH 继续运行
 ```
 
 打开本地 URL 后,登录到的是**服务器上的 dsh web**:能对话、能读写服务器文件。API key 在远程 web 的「设置 → 模型」里配置(写入服务器 `~/.dsh/.credentials.yaml`,本插件与隧道不触碰凭据)。
@@ -119,7 +121,7 @@ dsh --profile remote down lab            # 停隧道 + 登记表 released + 停�
 
 | 面板内容 | 作用 |
 |---|---|
-| **启动隧道 / up** · **断开连接 / down** | 起隧道;断开为两步确认(停隧道 + 停远端单元 + 释放端口登记) |
+| **启动隧道 / up** · **断开连接 / down** | 启动隧道；断开为两步确认，仅关闭本地隧道，保留远程 DSH 和端口登记 |
 | **在侧栏打开** · **在浏览器打开** | 把远端 dsh web 开进侧栏「浏览器」标签,或用系统浏览器打开 |
 | **刷新 / refresh** | 重新读取 `/remote-tunnel/status`(面板本身每 15 秒也会自动刷新) |
 | **vX.Y.Z**(标题旁) | 宿主半上报的当前版本 —— 桌面端「插件」页对任何插件都不显示版本号 |
@@ -184,7 +186,8 @@ check <host>                     就绪诊断(可作 CI 探针,非零退出码 =
 bootstrap <host> [--upgrade]     按登录账号补齐远程环境:Node/dsh(~/.npm-global)/~/.dsh/linger(幂等)
 provision <host> [--port N]      只做远程侧:分配端口 + systemd 单元 + 启动 + 登记(不起隧道)
 up <host> [--port N] [--local-port N] [--open] [--heartbeat 秒]
-down [host] [--keep-service]     停隧道 + released + 停单元 + 核实端口释放
+down [host]                     仅断开本地隧道，保留远程 DSH 和端口登记
+down [host] --stop-service      同时停止并禁用远程服务，核实后释放端口
 status [host] [--json]
 list
 logs <host> [--lines N] [--follow] [--local]
@@ -200,7 +203,7 @@ config show / config path
 3. **TOCTOU 兜底**:若 dsh 启动时端口被抢(`EADDRINUSE` 出现在单元日志),自动把该端口加入排除集,顺延下一个空闲端口重试(默认最多 5 轮)。
 4. **本地隧道**:`ssh -N -L 127.0.0.1:<本地>:127.0.0.1:<远程> <别名>`,本地端口先检查占用(被占自动顺延,并用 `netstat`+`tasklist` 报出占用者);ssh 进程退出后按退避序列(1s→2s→4s→8s→15s→30s 封顶)自动重连,永不断线(可配 `maxAttempts`)。隧道明确**不传** `ClearAllForwardings`(Windows OpenSSH 会把它连同命令行 `-L` 一起清掉);exec 会话仍会清掉 config 里的转发。
 5. **心跳**:隧道存活期间每 `heartbeatSeconds`(默认 120 秒)在锁内原位刷新登记表 `last_heartbeat`。
-6. **释放**:`down`(或 `up` 的 Ctrl+C)按序:停隧道 → 删除本地状态 → 登记表 `released` → 停远端单元并 **disable**(禁用,避免服务器重启后自己回来占住已释放的端口)→ 核实端口真的释放。`up`/`provision` 会重新 enable;`--keep-service` 则完全不动远端单元。另一个进程里的 `up` 监督器检测到状态文件被删除后自动停止重连,不会「诈尸」。**硬关终端**(不按 Ctrl+C)则远端服务照跑、登记表仍是 in-use——这是真实占用,不是泄漏:下次 `up` 会自动清理残留的本地状态并**复用同一个已登记端口**,不会越攒越多。
+6. **断开**：`down`、桌面的「断开连接」、`up` 的 Ctrl+C 和应用退出，都只删除本地隧道状态、关闭本地 SSH 转发与心跳，并取消自动重连，不发起远程 SSH 调用。远程 DSH 由 systemd 继续运行，端口仍由它占用，登记表因此保持 `in-use`。下次 `up` 复用原有服务和登记端口。`--keep-service` 保留为默认行为的兼容选项。如需同时停止远程服务，使用 `down <host> --stop-service`（`/remote down` 同样支持）：停止并禁用单元、确认端口空闲，三项全部成功后才释放登记。已经断开时，先重新连接，再执行显式停止。
 
 ## 配置
 

@@ -140,7 +140,7 @@ test("up → real HTTP through the tunnel → status → down (happy path)", asy
     assert.ok(ours !== undefined, `no listener entry for port ${result.remotePort}: ${JSON.stringify(listeners)}`);
     assert.equal(ours.pid, await targets.scope.mainPid(targets.hostDef, manager.cfg, manager.ctxFor("mock")));
 
-    const down = await manager.down("mock");
+    const down = await manager.down("mock", { stopService: true });
     assert.equal(down.released, true);
     assert.equal(down.serviceStopped, true);
     assert.equal(down.serviceDisabled, true);
@@ -157,6 +157,42 @@ test("up → real HTTP through the tunnel → status → down (happy path)", asy
     await teardown([manager], env);
   }
 });
+
+for (const mode of ["disconnect", "keep-service", "dispose"]) {
+  test(`${mode} preserves remote process and registry; reconnect reuses both`, async () => {
+    const env = setup();
+    const manager = makeManager(env.home);
+    const next = makeManager(env.home);
+    try {
+      const first = await manager.up("mock");
+      const before = readFileSync(join(env.mockRoot, "services.json"), "utf8");
+      const registryBefore = readFileSync(mockPath(env.mockRoot, first.registryPath), "utf8");
+      // A normal disconnect must not even try SSH, including when offline.
+      const resolveTargets = manager.resolveTargets;
+      manager.resolveTargets = () => { throw new Error("Disconnect contacted the server"); };
+      if (mode === "dispose") await manager.dispose();
+      else {
+        const result = await manager.down("mock", mode === "keep-service" ? { keepService: true } : {});
+        assert.equal(result.serviceKept, true);
+        assert.equal(result.released, false);
+        assert.deepEqual(result.warnings, []);
+      }
+      manager.resolveTargets = resolveTargets;
+      assert.equal(manager.listStatesLocal().length, 0);
+      assert.equal(readFileSync(join(env.mockRoot, "services.json"), "utf8"), before);
+      assert.equal(readFileSync(mockPath(env.mockRoot, first.registryPath), "utf8"), registryBefore);
+      assert.equal((await httpGet(`http://127.0.0.1:${first.remotePort}`)).status, 200);
+      const again = await next.up("mock");
+      assert.equal(again.remotePort, first.remotePort);
+      assert.equal(again.reused, true);
+      assert.equal(readFileSync(join(env.mockRoot, "services.json"), "utf8"), before);
+      assert.equal((await httpGet(again.url)).status, 200);
+      await next.down("mock", { stopService: true });
+    } finally {
+      await teardown([manager, next], env);
+    }
+  });
+}
 
 test("concurrent allocations for two users get distinct ports", async () => {  const env = setup();
   const managerA = makeManager(env.home);
@@ -310,7 +346,7 @@ test("auto-reconnect: killing the tunnel child brings it back", async () => {
   }
 });
 
-test("audit: stale detection, clean-stale, orphan after keep-service down", async () => {
+test("audit: stale detection, clean-stale, healthy registration after keep-service down", async () => {
   const env = setup();
   const manager = makeManager(env.home);
   try {
@@ -343,13 +379,13 @@ test("audit: stale detection, clean-stale, orphan after keep-service down", asyn
     assert.equal(afterClean.rows.find((r) => r.port === result.remotePort).status, "released");
 
     // tear the first tunnel down, then re-up and down --keep-service
-    // -> released row + listening port = orphan
+    // -> in-use row + listening port = healthy
     await manager.down("mock");
     const result2 = await manager.up("mock");
     await manager.down("mock", { keepService: true });
     const auditOrphan = await manager.audit("mock", {});
-    const orphanRow = auditOrphan.rows.find((r) => r.port === result2.remotePort);
-    assert.equal(orphanRow.verdict, "orphan");
+    const orphanRow = auditOrphan.rows.findLast((r) => r.port === result2.remotePort);
+    assert.equal(orphanRow.verdict, "ok");
     // real cleanup
     const targets = await manager.resolveTargets("mock");
     await targets.scope.stop(targets.hostDef, manager.cfg, manager.ctxFor("mock"));
@@ -478,8 +514,8 @@ test("shared-direct: registry update keeps the shared group (no mv inode swap)",
     assert.equal(result.registryKind, "shared-direct");
     assert.equal(getFileGroup(env.mockRoot, reg), "dshports", "allocation must keep the shared group");
 
-    // down updates the registry (status -> released) via remoteUpdateRegistry
-    await manager.down("mock");
+    // Explicit shutdown updates the registry via remoteUpdateRegistry.
+    await manager.down("mock", { stopService: true });
     assert.equal(getFileGroup(env.mockRoot, reg), "dshports", "update must keep the shared group (in-place rewrite, no mv)");
   } finally {
     delete process.env.DSH_MOCK_NO_SUDO;

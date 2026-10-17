@@ -38,7 +38,8 @@ port	user	workspace	source	created_at	last_heartbeat	status
 
 - **Allocation (atomic)**: inside one `flock` — read the in-use set, probe-bind every port in the range, pick the first port that is both unregistered and unbound, append an in-use row, echo the port. Concurrent allocators never get the same port.
 - **Heartbeat**: inside `flock`, `awk` updates the row's `last_heartbeat` in place (in-use rows only).
-- **Release**: inside `flock`, the row's `status` becomes `released`.
+- **Disconnect**: keep the remote service and its `in-use` row unchanged.
+- **Release**: only explicit `down --stop-service` stops and disables the unit, verifies the port is free, then changes the row's `status` to `released` inside `flock`.
 - **Cleanup**: `audit --clean-stale` flips rows that are registered in-use but no longer listened on to `released`; rows are kept for auditability.
 
 ## Audit

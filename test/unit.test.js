@@ -9,7 +9,53 @@ import { renderUnitBody } from "../src/remote/unit.js";
 import { readBootstrapScript, BOOTSTRAP_MARKER } from "../src/remote/bootstrap.js";
 import { parseNetstatListening, parseTasklistCsv, parseLsofListening } from "../src/local/ports.js";
 import { resolveMode } from "../src/index.js";
-import { authRejection } from "../src/web.js";
+import { authRejection, registerWebRoutes } from "../src/web.js";
+import { registerSlashCommands } from "../src/service.js";
+
+test("desktop HTTP Disconnect keeps the service unless shutdown is explicit", async () => {
+  let handler;
+  const calls = [];
+  const manager = {
+    down: async (alias, options) => { calls.push({ alias, ...options }); return { warnings: [] }; }
+  };
+  registerWebRoutes({
+    get: (name) => name === "webServer" ? { register: (route) => { handler = route.handler; return () => {}; } } : undefined,
+    effect: () => {}
+  }, manager, {}, {});
+  for (const flags of ["", "&keep-service=0", "&keep-service=1", "&stop-service=1"]) {
+    const response = await new Promise((resolve) => {
+      let status;
+      handler({ url: `/remote-tunnel/down?host=lab&confirm=1${flags}` }, {
+        writeHead: (value) => { status = value; },
+        end: (body) => resolve({ status, body: JSON.parse(body) })
+      });
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls.at(-1).stopService, flags === "&stop-service=1");
+  }
+});
+
+test("slash Disconnect defaults to keeping the service and accepts explicit shutdown", async () => {
+  let command;
+  const calls = [];
+  registerSlashCommands({ get: () => ({ register: (value) => { command = value; } }) }, {
+    listStatesLocal: () => [{ alias: "lab" }],
+    down: async (alias, options) => {
+      calls.push({ alias, ...options });
+      return { serviceKept: !options.stopService, warnings: [] };
+    }
+  });
+  for (const input of ["down lab", "down --keep-service", "down lab --stop-service"]) {
+    const result = await command.handler({ rawInput: input });
+    assert.equal(result.kind, "success");
+    assert.equal(calls.at(-1).alias, "lab");
+    assert.equal(calls.at(-1).stopService, input.includes("--stop-service"));
+    if (!input.includes("--stop-service")) assert.ok(result.text.includes("kept"));
+  }
+  const conflict = await command.handler({ rawInput: "down lab --keep-service --stop-service" });
+  assert.notEqual(conflict.kind, "success");
+  assert.equal(calls.length, 3);
+});
 
 test("parsePort: passes through valid ports and absent options", () => {
   assert.equal(parsePort("22", "--port"), 22);

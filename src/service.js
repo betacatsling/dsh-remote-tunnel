@@ -7,7 +7,7 @@ import { record } from "./probe.js";
 // CLI uses. The manager is created once by the bundle entry and shared with
 // the browser half's HTTP routes.
 
-const USAGE = "远程隧道管理 — /remote hosts | check <host> | bootstrap <host> [--upgrade] | up <host> [--open] | down [host] | status [host] | audit <host> | open [host]";
+const USAGE = "远程隧道管理 — /remote hosts | check <host> | bootstrap <host> [--upgrade] | up <host> [--open] | down [host] [--stop-service] | status [host] | audit <host> | open [host]";
 
 export function registerSlashCommands(ctx, manager) {
   const commands = ctx.get("commands");
@@ -68,13 +68,16 @@ export function registerSlashCommands(ctx, manager) {
             return { kind: "success", text: [`tunnel up for ${result.alias}`, `local: ${result.url}`, `remote: 127.0.0.1:${result.remotePort} (unit ${result.unit})`, `workspace: ${result.workspace}`, `stop: /remote down ${result.alias} or CLI 'down'`].join("\n") };
           }
           case "down": {
-            const alias = tokens[1] ?? onlyStateAlias(manager);
-            const result = await manager.down(alias, {});
+            const alias = tokens.slice(1).find((t) => !t.startsWith("--")) ?? onlyStateAlias(manager);
+            if (tokens.includes("--keep-service") && tokens.includes("--stop-service")) throw new TunnelError("--keep-service conflicts with --stop-service", { code: "E_USAGE" });
+            const result = await manager.down(alias, { stopService: tokens.includes("--stop-service") });
             const lines = [`${alias} down`];
             if (result.released) lines.push("registry: released");
             if (result.serviceStopped) lines.push("service: stopped");
             if (result.serviceDisabled) lines.push("service: disabled (will not restart after a reboot)");
-            lines.push(`remote port ${result.portFree ? "verified free" : "STILL LISTENING"}`);
+            if (result.serviceKept) lines.push("remote dsh and port registration: kept (reconnect with up)");
+            else lines.push(`remote port ${result.portFree ? "verified free" : "STILL LISTENING"}`);
+            for (const warning of result.warnings) lines.push(`warning: ${warning}`);
             return { kind: "success", text: lines.join("\n") };
           }
           case "status": {

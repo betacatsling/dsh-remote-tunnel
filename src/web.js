@@ -198,7 +198,7 @@ async function handle(connection, manager, services, settings, req, res) {
       case "down": {
         const alias = url.searchParams.get("host") ?? manager.listStatesLocal()[0]?.alias;
         if (alias === undefined) return sendJson(res, 409, { ok: false, error: "no tunnel is up" });
-        const result = await manager.down(alias, { keepService: url.searchParams.get("keep-service") === "1" });
+        const result = await manager.down(alias, { stopService: url.searchParams.get("stop-service") === "1" });
         return sendJson(res, 200, { ok: true, alias, ...result });
       }
       // Managing hosts writes the plugin's own config.yaml — never ~/.ssh.

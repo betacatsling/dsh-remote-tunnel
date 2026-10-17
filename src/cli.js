@@ -51,7 +51,7 @@ Commands:
   bootstrap <host>          install the ACCOUNT's remote prerequisites (Node/dsh/linger, idempotent); --upgrade
   provision <host>          allocate a remote port, install the systemd unit, start dsh web
   up <host>                 provision + open the SSH tunnel (auto-reconnect, heartbeat)
-  down [host]               stop the tunnel, release the registry entry, stop the unit
+  down [host]               disconnect the tunnel; keep remote dsh running
   status [host]             local tunnel state + remote service state
   list                      local tunnels
   logs <host>               remote dsh web logs (journalctl); --local for the tunnel log
@@ -233,17 +233,20 @@ Commands:
 
   // ---- down ----------------------------------------------------------------
   const downCmd = program.command("down [host]")
-    .description("stop the tunnel, release the registry entry, stop the remote unit")
-    .option("--keep-service", "keep the remote dsh web unit running");
+    .description("disconnect the local tunnel; keep remote dsh and its port registration")
+    .option("--keep-service", "keep remote dsh running (the default; compatibility option)")
+    .option("--stop-service", "also stop and disable remote dsh, then release its port");
   downCmd.action((alias, options) => {
     Promise.resolve().then(async () => {
+      if (options.keepService && options.stopService) throw new TunnelError("--keep-service conflicts with --stop-service", { code: "E_USAGE" });
       const target = alias ?? onlyStateAlias();
-      const result = await manager.down(target, { keepService: options.keepService === true });
+      const result = await manager.down(target, { stopService: options.stopService === true });
       reporter.out(`✓ ${target} down`);
       if (result.released) reporter.out("  registry: released");
       if (result.serviceStopped) reporter.out("  service: stopped");
       if (result.serviceDisabled) reporter.out("  service: disabled (will not restart after a reboot)");
-      reporter.out(`  remote port ${result.portFree ? "verified free" : "STILL LISTENING"}`);
+      if (result.serviceKept) reporter.out("  remote dsh and port registration: kept (reconnect with up)");
+      else reporter.out(`  remote port ${result.portFree ? "verified free" : "STILL LISTENING"}`);
       for (const warning of result.warnings) reporter.err(`  warning: ${warning}`);
     }).then(() => exit?.(0), (error) => { printError(error); exit?.(1); });
   });

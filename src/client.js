@@ -488,7 +488,7 @@ window.__ModuleLoader__.load({
 
       if (confirming) {
         children.push(h("div", { key: "warn", style: S.muted },
-          "再次点击「确认断开?」将停止隧道、停掉服务器上的 dsh-web 并释放端口(5 秒后自动取消)"));
+          "再次点击「确认断开?」将仅断开本地隧道，远程 DSH 继续运行，重新连接可继续使用(5 秒后自动取消)"));
       }
 
       if (status !== null) {
@@ -778,7 +778,7 @@ window.__ModuleLoader__.load({
           children.push(h("div", { key: "buttons", style: S.row }, buttons));
           if (confirming) {
             children.push(h("div", { key: "warn", style: S.muted },
-              "再次点击「确认断开?」将停止隧道、停掉服务器上的 dsh-web 并释放端口(5 秒后自动取消)"));
+              "再次点击「确认断开?」将仅断开本地隧道，远程 DSH 继续运行，重新连接可继续使用(5 秒后自动取消)"));
           }
           if (error !== null) children.push(h("div", { key: "error", style: S.error }, error));
           return h("div", { style: S.card }, children);

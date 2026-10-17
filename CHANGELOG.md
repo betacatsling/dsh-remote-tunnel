@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1-persistent.1 (fork)
+
+- Disconnect, Ctrl+C and application shutdown now close only local tunnels and heartbeats; remote DSH, systemd enablement and port registrations survive. Reconnect reuses the running service.
+- Add explicit `down --stop-service` for remote shutdown; release registration only after stop, disable and free-port verification succeed.
+- Keep SSH discovery, bootstrap, systemd provisioning and automatic reconnection. Update desktop confirmation copy and bilingual documentation.
+
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions are published to npm and tagged `v*` on GitHub.

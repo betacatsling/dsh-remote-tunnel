@@ -2,6 +2,8 @@
 
 [中文](README.zh.md) | English
 
+> Persistent-service fork: Disconnect keeps remote DSH running. SSH discovery, bootstrap, systemd management and automatic reconnection are retained. To install this fork, clone it and run `dsh plugin --profile desktop add .` from the checkout. The npm package instructions below refer to upstream.
+
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 **Remote Host Tunnel Manager**: automates the "local browser → dsh web on a remote Linux server" link — remote port allocation with a registry, systemd supervision, resilient SSH tunneling, local URL output, and full lifecycle management. Built for single users and for teams sharing one server.
@@ -91,11 +93,11 @@ dsh --profile remote up lab --open
 #   ✓ tunnel up — http://127.0.0.1:3083 (remote lab:3081)
 #   stop: dsh --profile remote down lab   (or Ctrl+C)
 
-# Inspect / stop / review
+# Inspect / disconnect / review
 dsh --profile remote status lab
 dsh --profile remote logs lab            # remote dsh web logs (journalctl)
 dsh --profile remote audit lab           # registry vs. real occupancy
-dsh --profile remote down lab            # stop tunnel + registry released + stop unit + verify port freed
+dsh --profile remote down lab            # disconnect locally; remote dsh keeps running
 ```
 
 The local URL opens the dsh web **on the server**: chat and read/write server files. Configure the API key in the remote web's Settings → Models (written to the server's `~/.dsh/.credentials.yaml` — this plugin and the tunnel never touch credentials).
@@ -125,7 +127,7 @@ strip is not rendered in the hero layout a new session shows.
 
 | In the pane | What it does |
 |---|---|
-| **启动隧道 / up** · **断开连接 / down** | Starts the tunnel, or stops it (two-step confirmation: tunnel, remote unit and registry release) |
+| **启动隧道 / up** · **断开连接 / down** | Starts the tunnel, or disconnects locally (two-step confirmation; remote dsh and its registered port stay running) |
 | **在侧栏打开** · **在浏览器打开** | Opens the remote dsh web in the sidebar Browser tab, or in the system browser |
 | **刷新 / refresh** | Re-reads `/remote-tunnel/status` (the pane also polls every 15 s) |
 | **vX.Y.Z** (beside the title) | The version the host half reported — the desktop app's Plugins page renders no version for any plugin |
@@ -191,7 +193,8 @@ check <host>                     readiness diagnostics (usable as a CI probe: no
 bootstrap <host> [--upgrade]     prepare the ssh account: Node/dsh (~/.npm-global)/~/.dsh/linger (idempotent)
 provision <host> [--port N]      remote side only: allocate + systemd unit + start + register (no tunnel)
 up <host> [--port N] [--local-port N] [--open] [--heartbeat seconds]
-down [host] [--keep-service]     stop tunnel + released + stop unit + verify port freed
+down [host]                     disconnect locally; keep remote dsh and its registered port
+down [host] --stop-service      also stop/disable remote dsh and release its port
 status [host] [--json]
 list
 logs <host> [--lines N] [--follow] [--local]
@@ -207,7 +210,7 @@ config show / config path
 3. **TOCTOU fallback**: if dsh loses a bind race at startup (`EADDRINUSE` shows up in the unit journal), the port is added to the exclusion set and the next free port is retried (up to 5 rounds by default).
 4. **Local tunnel**: `ssh -N -L 127.0.0.1:<local>:127.0.0.1:<remote> <alias>`; the local port is checked first (shifts automatically when occupied, with `netstat`+`tasklist` naming the occupier). When the ssh process exits, it respawns with a backoff sequence (1s→2s→4s→8s→15s→30s cap), forever by default (`maxAttempts` configurable). The tunnel deliberately does **not** pass `ClearAllForwardings` (Windows OpenSSH would clear the command-line `-L` along with it); exec sessions still clear config forwards.
 5. **Heartbeat**: while the tunnel lives, the registry's `last_heartbeat` is refreshed in-place under the lock every `heartbeatSeconds` (default 120).
-6. **Release**: `down` (or Ctrl+C on `up`) runs in order: stop tunnel → remove local state → registry `released` → stop **and disable** the remote unit (an enabled unit would otherwise come back after a server reboot and re-occupy the released port) → verify the port is really free. `up`/`provision` enable it again; `--keep-service` leaves the unit untouched. An `up` supervisor in another process notices the removed state file and stops reconnecting — no resurrection. Closing the terminal hard (without Ctrl+C) leaves the remote service running and the registry row `in-use` — which is accurate, not a leak: the next `up` cleans the stale local state and **reuses the same registered port** (no accumulation).
+6. **Disconnect**: `down`, the desktop Disconnect button, Ctrl+C on `up`, and application shutdown remove local tunnel state, stop local SSH forwarding and heartbeats, and cancel automatic reconnection. They make no remote SSH calls. Remote dsh keeps running under systemd, and its registry row stays `in-use` because it still owns the port. The next `up` reuses the same running unit and registered port. `--keep-service` remains a compatibility alias for the default. To shut down remotely as well, use `down <host> --stop-service` (also supported by `/remote down`): it stops and disables the unit, verifies the port is free, then releases the registry row only after all three checks succeed. Reconnect first if already disconnected and you need an explicit shutdown.
 
 ## Configuration
 

@@ -618,42 +618,43 @@ export class TunnelManager {
     };
   }
 
-  /** Stop the tunnel, release the registry entry, stop the unit, verify. */
+  /** Disconnect locally. Remote shutdown requires the explicit stopService option. */
   async down(alias, opts = {}) {
     const state = readState(this.home, alias);
     const tunnel = this.tunnels.get(alias);
     if (state === undefined && tunnel === undefined) {
       throw new TunnelError(`no tunnel state for "${alias}" — nothing to stop`, { code: "E_NOT_UP" });
     }
-    if (tunnel !== undefined) await tunnel.stop();
-    else if (state.sshPid !== null && state.sshPid !== undefined) await killProcessTree(state.sshPid);
-    this.tunnels.delete(alias);
     this.stopHeartbeat(alias);
-    // Remove the state file BEFORE the remote release round-trips: the local
-    // teardown is authoritative, and another process's supervisor watches
-    // this file to stop reconnecting.
+    // Cancel cross-process reconnection BEFORE killing ssh; otherwise its exit
+    // can race the state removal and resurrect the connection.
     removeState(this.home, alias);
+    if (tunnel !== undefined) await tunnel.stop();
+    else if (state?.sshPid !== null && state?.sshPid !== undefined) await killProcessTree(state.sshPid);
+    this.tunnels.delete(alias);
 
-    const result = { alias, released: false, serviceStopped: false, serviceDisabled: false, portFree: false, warnings: [] };
-    if (state !== undefined) {
+    const result = { alias, serviceKept: opts.stopService !== true, released: false, serviceStopped: false, serviceDisabled: false, portFree: false, warnings: [] };
+    // A live service still owns its port. Keep the registry in-use and avoid
+    // any SSH round trip, so Disconnect also works while the server is offline.
+    if (state !== undefined && opts.stopService === true) {
       try {
         const targets = await this.resolveTargets(alias);
         const ctx = this.ctxFor(alias);
-        await remoteUpdateRegistry(targets.hostDef, this.cfg, ctx, targets.registry, {
-          port: state.remotePort, user: state.user, field: "status", value: "released"
-        });
-        result.released = true;
-        if (opts.keepService !== true) {
-          result.serviceStopped = await targets.scope.stop(targets.hostDef, this.cfg, ctx).then((r) => r.code === 0, () => false);
-          if (!result.serviceStopped) result.warnings.push("remote unit did not stop");
-          // Disable as well: an enabled unit comes back after a server reboot,
-          // which would re-occupy a port the registry already marked released.
-          result.serviceDisabled = await targets.scope.disable(targets.hostDef, this.cfg, ctx).then((r) => r.code === 0, () => false);
-          if (!result.serviceDisabled) result.warnings.push("remote unit could not be disabled (it may restart after a reboot)");
-        }
+        result.serviceStopped = await targets.scope.stop(targets.hostDef, this.cfg, ctx).then((r) => r.code === 0, () => false);
+        if (!result.serviceStopped) result.warnings.push("remote unit did not stop");
+        // Disable as well: an enabled unit comes back after a server reboot,
+        // which would re-occupy a port the registry already marked released.
+        result.serviceDisabled = await targets.scope.disable(targets.hostDef, this.cfg, ctx).then((r) => r.code === 0, () => false);
+        if (!result.serviceDisabled) result.warnings.push("remote unit could not be disabled (it may restart after a reboot)");
         const listening = await remoteOccupancy(targets.hostDef, this.cfg, ctx, [state.remotePort]);
         result.portFree = !listening.includes(state.remotePort);
         if (!result.portFree) result.warnings.push(`remote port ${state.remotePort} still accepts connections`);
+        if (result.serviceStopped && result.serviceDisabled && result.portFree) {
+          await remoteUpdateRegistry(targets.hostDef, this.cfg, ctx, targets.registry, {
+            port: state.remotePort, user: state.user, field: "status", value: "released"
+          });
+          result.released = true;
+        }
       } catch (error) {
         result.warnings.push(`remote release failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -904,7 +905,7 @@ export class TunnelManager {
     const aliases = new Set([...this.tunnels.keys(), ...this.heartbeats.keys()]);
     for (const alias of aliases) {
       try {
-        await this.down(alias, { keepService: false });
+        await this.down(alias);
       } catch {
         // best effort on shutdown
       }
