@@ -68,7 +68,11 @@ test("stream queues deliver frames in order and release pending readers", async 
   assert.deepEqual(await pending, { done: true });
 });
 
-async function clientFixture({ question = false } = {}) {
+async function clientFixture({
+  question = false,
+  workspacePush = true,
+  workspaceEcho,
+} = {}) {
   const requests = [],
     disposers = [],
     remote = {
@@ -119,13 +123,19 @@ async function clientFixture({ question = false } = {}) {
       if (body.endpoint === "session/create") {
         const sessionId = "session-created-" + ++createdCount;
         remote.sessionIds = [sessionId, ...remote.sessionIds];
-        for (const controller of workspaceReaders.get("stream") || [])
-          pushFrame(controller, { type: "upsert", workspace: remote });
+        if (workspacePush)
+          for (const controller of workspaceReaders.get("stream") || [])
+            pushFrame(controller, { type: "upsert", workspace: remote });
         return Response.json({
           ok: true,
           value: { ok: true, value: { sessionId } },
         });
       }
+      if (body.endpoint === "workspace/create")
+        return Response.json({
+          ok: true,
+          value: { ok: true, value: { workspace: { ...remote } } },
+        });
       value = {
         ok: true,
         value:
@@ -275,6 +285,21 @@ async function clientFixture({ question = false } = {}) {
   });
   const rpc = { call: originalCall };
   let reconnects = 0;
+  let workspaceSnapshot = {
+    items: [{ ...remote, sessionIds: [...remote.sessionIds] }],
+  };
+  const workspaces = {
+    list: { getSnapshot: () => workspaceSnapshot },
+    async create(input) {
+      const r = await rpc.call("/api", "workspace/create", {
+        args: { request: input },
+      });
+      if (!r.ok) throw new Error("Workspace echo failed");
+      await workspaceEcho;
+      workspaceSnapshot = { items: [r.value.workspace] };
+      return r.value.workspace;
+    },
+  };
   const scoped = {
     connection: {
       rpc,
@@ -307,8 +332,8 @@ async function clientFixture({ question = false } = {}) {
     effect(fn) {
       disposers.push(fn());
     },
-    get() {
-      return undefined;
+    get(name) {
+      return name === "workspaces" ? workspaces : undefined;
     },
   };
   scoped.inject = (deps, fn) => {
@@ -375,6 +400,9 @@ async function clientFixture({ question = false } = {}) {
     controls,
     accepted,
     injectedDependencies,
+    get workspaceSnapshot() {
+      return workspaceSnapshot;
+    },
     loseLocalWorkspace({ failReopen = false } = {}) {
       failWorkspaceOpen = failReopen;
       for (const controller of workspaceReaders.get("local-stream") || [])
@@ -577,7 +605,15 @@ test(
     const f = await clientFixture(),
       abort = new AbortController();
     const frames = f.rpc
-      .open("/api", "workspace/follow", { args: {} }, abort.signal)
+      .open(
+        "/api",
+        "workspace/follow",
+        { args: {} },
+        abort.signal,
+        (async function* () {
+          throw new Error("obsolete generation input must not be consumed");
+        })(),
+      )
       [Symbol.asyncIterator]();
     try {
       assert.equal((await frames.next()).value.type, "baseline");
@@ -612,3 +648,47 @@ test(
     }
   },
 );
+
+test("workspace plus waits for the shipped Workspace unary echo when live membership is unavailable", async () => {
+  const gate = Promise.withResolvers();
+  const f = await clientFixture({
+    workspacePush: false,
+    workspaceEcho: gate.promise,
+  });
+  const request = { workspaceId: "workspace-lab" };
+  let resolved = false;
+  try {
+    const creation = f.rpc
+      .call("/api", "session/create", { args: { request } })
+      .then((r) => {
+        resolved = true;
+        return r;
+      });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(
+      resolved,
+      false,
+      "navigation must wait for workspace publication",
+    );
+    assert.ok(
+      !f.workspaceSnapshot.items[0].sessionIds.includes("session-created-1"),
+    );
+    gate.resolve();
+    const result = await creation;
+    assert.ok(
+      f.workspaceSnapshot.items[0].sessionIds.includes(result.value.sessionId),
+    );
+    const create = f.requests.find(
+      (r) => r.body.endpoint === "session/create",
+    ).body;
+    const echo = f.requests.find(
+      (r) => r.body.endpoint === "workspace/create",
+    ).body;
+    assert.deepEqual(create.payload.args.request, request);
+    assert.equal(echo.host, "lab");
+    assert.equal(echo.payload.args.request.path, "/workspace/research");
+  } finally {
+    gate.resolve();
+    f.disposers.forEach((d) => d?.());
+  }
+});

@@ -86,7 +86,7 @@ window.__ModuleLoader__.load({
           signal: combined,
         });
       } catch (error) {
-        if (combined.aborted) throw error;
+        if (signal.aborted) throw error;
         throw new RemoteStreamCarrierError(error.message);
       }
       if (!response.ok)
@@ -119,7 +119,7 @@ window.__ModuleLoader__.load({
           try {
             next = await reader.read();
           } catch (error) {
-            if (combined.aborted) throw error;
+            if (signal.aborted) throw error;
             throw new RemoteStreamCarrierError(error.message);
           }
           if (next.done)
@@ -240,6 +240,20 @@ window.__ModuleLoader__.load({
             if (value?.sessionId) owners.set(value.sessionId, alias);
             if (value?.workspace) remember(alias, value.workspace);
             if (endpoint === "session/list") remember(alias, null, value.items);
+            if (endpoint === "session/create" && value?.sessionId) {
+              // Navigation needs the committed membership before it selects the
+              // new Session. A pushed update may be delayed or reconnecting.
+              // The shipped Workspace command folds its idempotent unary echo
+              // into the same model used by the sidebar and workspace chip.
+              const workspaces = scoped.get("workspaces");
+              if (!workspaces)
+                throw new Error(
+                  "Workspace controller unavailable during session creation",
+                );
+              await workspaces.create({
+                path: hosts.get(alias).workspace.path,
+              });
+            }
           }
           if (result.ok && endpoint.startsWith("workspace/")) {
             let snapshot;
@@ -373,7 +387,7 @@ window.__ModuleLoader__.load({
                   endpoint,
                   payload,
                   combined,
-                  alias ? undefined : uplink,
+                  undefined,
                 ))
                   inbox.push({ alias, value });
                 if (!alias && !combined.aborted)
